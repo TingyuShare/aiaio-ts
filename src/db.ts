@@ -2,7 +2,42 @@ import initSqlJs from "sql.js";
 type SqlJsDatabase = import("sql.js").Database;
 import { v4 as uuidv4 } from "uuid";
 import { SYSTEM_PROMPTS } from "./prompts";
+import crypto from "crypto";
 import fs from "fs";
+
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "aiaio-default-encryption-key-32b";
+const ALGORITHM = "aes-256-gcm";
+
+function deriveKey(): Buffer {
+  return crypto.createHash("sha256").update(ENCRYPTION_KEY).digest();
+}
+
+function encryptApiKey(plain: string): string {
+  if (!plain) return "";
+  const key = deriveKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString("base64");
+}
+
+function decryptApiKey(encoded: string): string {
+  if (!encoded) return "";
+  try {
+    const key = deriveKey();
+    const buf = Buffer.from(encoded, "base64");
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const encrypted = buf.subarray(28);
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+    decipher.setAuthTag(tag);
+    return decipher.update(encrypted) + decipher.final("utf8");
+  } catch {
+    // If decryption fails (e.g. old unencrypted data), return as-is
+    return encoded;
+  }
+}
 
 const DB_SCHEMA = `
 CREATE TABLE IF NOT EXISTS conversations (
@@ -449,21 +484,27 @@ export class ChatDatabase {
 
   // --- Providers ---
   getDefaultProvider(): Provider | undefined {
-    return this.queryOne("SELECT * FROM providers WHERE is_default = 1") as unknown as Provider | undefined;
+    const p = this.queryOne("SELECT * FROM providers WHERE is_default = 1") as unknown as Provider | undefined;
+    if (p) p.api_key = decryptApiKey(p.api_key);
+    return p;
   }
 
   getAllProviders(): Provider[] {
-    return this.queryAll("SELECT * FROM providers ORDER BY name") as unknown as Provider[];
+    const providers = this.queryAll("SELECT * FROM providers ORDER BY name") as unknown as Provider[];
+    for (const p of providers) p.api_key = decryptApiKey(p.api_key);
+    return providers;
   }
 
   getProviderById(providerId: number): Provider | undefined {
-    return this.queryOne("SELECT * FROM providers WHERE id = ?", [providerId]) as unknown as Provider | undefined;
+    const p = this.queryOne("SELECT * FROM providers WHERE id = ?", [providerId]) as unknown as Provider | undefined;
+    if (p) p.api_key = decryptApiKey(p.api_key);
+    return p;
   }
 
   addProvider(provider: { name: string; temperature?: number; top_p?: number; reasoning_effort?: string; use_for_summarization?: boolean; host: string; api_key?: string; api_key_header?: string }): number {
     this.db.run(
       `INSERT INTO providers (name, temperature, top_p, reasoning_effort, use_for_summarization, host, api_key, api_key_header) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [provider.name, provider.temperature ?? 1.0, provider.top_p ?? 0.95, provider.reasoning_effort ?? "none", provider.use_for_summarization ? 1 : 0, provider.host, provider.api_key ?? "", provider.api_key_header ?? "Authorization"]
+      [provider.name, provider.temperature ?? 1.0, provider.top_p ?? 0.95, provider.reasoning_effort ?? "none", provider.use_for_summarization ? 1 : 0, provider.host, encryptApiKey(provider.api_key ?? ""), provider.api_key_header ?? "Authorization"]
     );
     const r = this.db.exec("SELECT last_insert_rowid()");
     this.save();
@@ -473,7 +514,7 @@ export class ChatDatabase {
   updateProvider(providerId: number, provider: { name: string; temperature?: number; top_p?: number; reasoning_effort?: string; use_for_summarization?: boolean; host: string; api_key?: string; api_key_header?: string }): boolean {
     this.db.run(
       `UPDATE providers SET name=?, temperature=?, top_p=?, reasoning_effort=?, use_for_summarization=?, host=?, api_key=?, api_key_header=?, updated_at=strftime('%s.%f','now') WHERE id=?`,
-      [provider.name, provider.temperature ?? 1.0, provider.top_p ?? 0.95, provider.reasoning_effort ?? "none", provider.use_for_summarization ? 1 : 0, provider.host, provider.api_key ?? "", provider.api_key_header ?? "Authorization", providerId]
+      [provider.name, provider.temperature ?? 1.0, provider.top_p ?? 0.95, provider.reasoning_effort ?? "none", provider.use_for_summarization ? 1 : 0, provider.host, encryptApiKey(provider.api_key ?? ""), provider.api_key_header ?? "Authorization", providerId]
     );
     this.save();
     return true;
