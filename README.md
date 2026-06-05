@@ -61,16 +61,32 @@ npm run dev
 
 ## Docker Usage
 
-1. Build the Docker image:
+### Pre-built Image
+
 ```bash
-docker build -t aiaio-ts .
+docker pull tingyu163/aiaio-ts
+docker run --network host \
+  -v ./data:/data \
+  tingyu163/aiaio-ts
 ```
 
-2. Run the container:
+### Docker Compose
+
 ```bash
-docker run --network host \
-  -v /path/to/data:/data \
-  aiaio-ts
+docker compose up -d
+```
+
+```yaml
+# docker-compose.yml
+services:
+  aiaio-ts:
+    image: tingyu163/aiaio-ts
+    network_mode: host
+    volumes:
+      - ./data:/data
+    expose:
+      - 10000
+    restart: unless-stopped
 ```
 
 ## UI Configuration
