@@ -1,18 +1,22 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json* tsconfig.json ./
+COPY src/ ./src/
+
+RUN npm ci && npm run build
+
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package files
 COPY package.json package-lock.json* ./
-
-# Install dependencies
 RUN npm ci --omit=dev
 
-# Copy built files
-COPY dist/ ./dist/
+COPY --from=builder /app/dist/ ./dist/
 COPY public/ ./public/
 
-# Create data directory
 RUN mkdir -p /data
 
 EXPOSE 10000

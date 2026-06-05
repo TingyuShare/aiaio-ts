@@ -1,4 +1,15 @@
 // Global state management
+function generateUUID() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    // Fallback for insecure contexts (non-localhost/non-HTTPS)
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (c === 'x' ? 0 : 3);
+        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+}
+
 const state = {
     ws: null,
     authToken: localStorage.getItem('aiaio_auth_token') || null,
@@ -18,8 +29,7 @@ const state = {
     editingMessageId: null,
     editingMessageId: null,
     abortController: null,
-    clientId: crypto.randomUUID(),
-    clientId: crypto.randomUUID(),
+    clientId: generateUUID(),
     selectedFiles: [], // Track selected files
     currentProjectId: null,
     projects: []
