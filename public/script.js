@@ -1,0 +1,2000 @@
+// Global state management
+const state = {
+    ws: null,
+    authToken: localStorage.getItem('aiaio_auth_token') || null,
+    isInitializingSettings: false,
+    currentSettings: null,
+    originalSettings: null,
+    isScrolledManually: false,
+    lastScrollTop: 0,
+    currentAssistantMessage: null,
+    currentConversationId: null,
+    isLoading: false,
+    currentPrompt: null,
+    isPromptEditing: false,
+    editingPromptId: null,
+    originalPromptText: '',
+    isPromptEdited: false,
+    editingMessageId: null,
+    editingMessageId: null,
+    abortController: null,
+    clientId: crypto.randomUUID(),
+    clientId: crypto.randomUUID(),
+    selectedFiles: [], // Track selected files
+    currentProjectId: null,
+    projects: []
+};
+
+// DOM Elements
+const elements = {
+    chatForm: document.getElementById('chat-form'),
+    messageInput: document.getElementById('message-input'),
+    chatMessages: document.getElementById('chat-messages'),
+    messagesContainer: document.getElementById('messages-container'),
+    jumpToBottomButton: document.getElementById('jump-to-bottom'),
+    systemPrompt: document.getElementById('system-prompt'),
+    fileInput: document.getElementById('file-input'),
+    filePreviewContainer: document.getElementById('file-preview-container'),
+    sendButton: document.getElementById('send-button'),
+    stopButton: document.getElementById('stop-button'),
+    sidebar: document.getElementById('sidebar'),
+    settingsSidebar: document.getElementById('settings-sidebar'),
+    sidebarOverlay: document.getElementById('sidebar-overlay'),
+    promptSelector: document.getElementById('prompt-selector'),
+
+    settingsSelector: document.getElementById('settings-selector'),
+    saveSettingsButton: document.getElementById('save-settings'),
+
+    // Top Bar Info
+    infoHost: document.getElementById('info-host'),
+
+    // Project Elements
+    projectSelector: document.getElementById('project-selector'),
+    projectModal: document.getElementById('project-modal'),
+    projectModalContent: document.getElementById('project-modal-content'),
+    projectModalTitle: document.getElementById('project-modal-title'),
+    projectNameInput: document.getElementById('project-name'),
+    projectDescInput: document.getElementById('project-description'),
+    projectPromptInput: document.getElementById('project-system-prompt'),
+    projectIdInput: document.getElementById('project-id'),
+    deleteProjectBtn: document.getElementById('delete-project-btn')
+};
+
+// Initialize app
+// Auth helper: wrap fetch with auth token
+async function authFetch(url, options = {}) {
+    if (state.authToken) {
+        options.headers = options.headers || {};
+        options.headers['X-Auth-Token'] = state.authToken;
+    }
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+        state.authToken = null;
+        localStorage.removeItem('aiaio_auth_token');
+        showLoginOverlay();
+        throw new Error('Unauthorized');
+    }
+    return response;
+}
+
+function showLoginOverlay() {
+    document.getElementById('login-overlay').classList.remove('hidden');
+}
+
+function hideLoginOverlay() {
+    document.getElementById('login-overlay').classList.add('hidden');
+}
+
+async function checkAuth() {
+    try {
+        const statusRes = await fetch('/auth/status');
+        const statusData = await statusRes.json();
+
+        // Set up login form handler
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const code = document.getElementById('login-code').value;
+            const errorEl = document.getElementById('login-error');
+            errorEl.classList.add('hidden');
+
+            try {
+                const res = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errorEl.textContent = data.detail || 'Login failed';
+                    errorEl.classList.remove('hidden');
+                    return;
+                }
+                state.authToken = data.token;
+                localStorage.setItem('aiaio_auth_token', data.token);
+
+                // Re-check if code change is needed
+                const freshStatus = await fetch('/auth/status');
+                const freshStatusData = await freshStatus.json();
+
+                if (freshStatusData.needs_code_change) {
+                    document.getElementById('login-form').classList.add('hidden');
+                    document.getElementById('change-code-form').classList.remove('hidden');
+                } else {
+                    // Reload page for clean state
+                    window.location.reload();
+                }
+            } catch (err) {
+                errorEl.textContent = 'Connection error';
+                errorEl.classList.remove('hidden');
+            }
+        });
+
+        // Set up change code form handler
+        document.getElementById('change-code-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const newCode = document.getElementById('new-code').value;
+            const confirmCode = document.getElementById('confirm-code').value;
+            const errorEl = document.getElementById('change-code-error');
+            errorEl.classList.add('hidden');
+
+            if (newCode !== confirmCode) {
+                errorEl.textContent = 'Codes do not match';
+                errorEl.classList.remove('hidden');
+                return;
+            }
+            if (newCode.length < 4) {
+                errorEl.textContent = 'Code must be at least 4 characters';
+                errorEl.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const res = await authFetch('/auth/change-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_code: newCode })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errorEl.textContent = data.detail || 'Failed to change code';
+                    errorEl.classList.remove('hidden');
+                    return;
+                }
+                // Code changed, need to re-login with new code
+                state.authToken = null;
+                localStorage.removeItem('aiaio_auth_token');
+                document.getElementById('change-code-form').classList.add('hidden');
+                document.getElementById('login-form').classList.remove('hidden');
+                document.getElementById('login-code').value = '';
+                document.getElementById('login-error').textContent = 'Code changed. Please login with your new code.';
+                document.getElementById('login-error').classList.remove('hidden');
+            } catch (err) {
+                errorEl.textContent = 'Connection error';
+                errorEl.classList.remove('hidden');
+            }
+        });
+
+        // If already authenticated, check if code change is needed
+        if (state.authToken) {
+            // Verify token is still valid
+            const testRes = await authFetch('/version');
+            if (testRes.ok) {
+                // Re-check status
+                const freshStatus = await fetch('/auth/status');
+                const freshStatusData = await freshStatus.json();
+
+                if (freshStatusData.needs_code_change) {
+                    showLoginOverlay();
+                    document.getElementById('login-form').classList.add('hidden');
+                    document.getElementById('change-code-form').classList.remove('hidden');
+                } else {
+                    hideLoginOverlay();
+                    initializeCore();
+                    initializeEventListeners();
+                }
+                return;
+            }
+        }
+
+        // Not authenticated, show login
+        showLoginOverlay();
+    } catch (err) {
+        showLoginOverlay();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
+
+    // Check initial theme
+    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+    } else {
+        document.documentElement.classList.remove('dark');
+    }
+}, { once: true });
+
+function initializeCore() {
+    loadProjects().then(() => {
+        loadConversations();
+        startNewConversation();
+    });
+    updateSystemPrompt();
+    connectWebSocket();
+    initializeSettings();
+    loadVersion();
+    loadPrompts();
+    updateTopBarInfo();
+}
+
+function initializeEventListeners() {
+    elements.chatMessages.addEventListener('scroll', handleScroll);
+    elements.promptSelector?.addEventListener('change', handlePromptChange);
+    elements.systemPrompt.addEventListener('input', handlePromptTextChange);
+
+
+    // Settings listeners
+    elements.settingsSelector?.addEventListener('change', handleSettingsChange);
+    elements.saveSettingsButton?.addEventListener('click', saveSettings);
+
+    // Slider listeners
+    document.getElementById('temperature')?.addEventListener('input', (e) => {
+        document.getElementById('temp-value').textContent = e.target.value;
+    });
+    document.getElementById('top-p')?.addEventListener('input', (e) => {
+        document.getElementById('top-p-value').textContent = e.target.value;
+    });
+
+    // Handle visibility change
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Auto-resize textarea
+    elements.messageInput.addEventListener('input', function () {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight) + 'px';
+        if (this.value === '') this.style.height = 'auto';
+    });
+}
+
+// UI Toggle Functions
+function openSidebar() {
+    elements.sidebar.classList.remove('-translate-x-full');
+    elements.sidebarOverlay.classList.remove('hidden');
+}
+
+function closeSidebar() {
+    elements.sidebar.classList.add('-translate-x-full');
+    elements.sidebarOverlay.classList.add('hidden');
+}
+
+function toggleSettings() {
+    const isHidden = elements.settingsSidebar.classList.contains('translate-x-full');
+    const overlay = document.getElementById('settings-overlay');
+
+    if (isHidden) {
+        elements.settingsSidebar.classList.remove('translate-x-full');
+        overlay.classList.remove('hidden');
+        // Small delay to allow display:block to apply before opacity transition
+        setTimeout(() => overlay.classList.remove('opacity-0'), 10);
+    } else {
+        elements.settingsSidebar.classList.add('translate-x-full');
+        overlay.classList.add('opacity-0');
+        setTimeout(() => overlay.classList.add('hidden'), 300);
+    }
+}
+
+// Modal Logic
+function showModal(title, message, type = 'info', onConfirm = null) {
+    const modal = document.getElementById('custom-modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    const messageEl = document.getElementById('modal-message');
+    const actionsEl = document.getElementById('modal-actions');
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    actionsEl.innerHTML = '';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors text-sm font-medium';
+    closeBtn.textContent = type === 'confirm' ? 'Cancel' : 'Close';
+    closeBtn.onclick = closeModal;
+    actionsEl.appendChild(closeBtn);
+
+    if (type === 'confirm' && onConfirm) {
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm font-medium shadow-lg shadow-blue-600/20';
+        confirmBtn.textContent = 'Confirm';
+        confirmBtn.onclick = () => {
+            onConfirm();
+            closeModal();
+        };
+        actionsEl.appendChild(confirmBtn);
+    }
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    setTimeout(() => {
+        content.classList.remove('scale-95', 'opacity-0');
+        content.classList.add('scale-100', 'opacity-100');
+    }, 10);
+}
+
+function closeModal() {
+    const modal = document.getElementById('custom-modal');
+    const content = document.getElementById('modal-content');
+
+    content.classList.remove('scale-100', 'opacity-100');
+    content.classList.add('scale-95', 'opacity-0');
+
+    setTimeout(() => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }, 200);
+}
+
+function showInputModal(title, label, placeholder = '', defaultValue = '') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('input-modal');
+        const content = document.getElementById('input-modal-content');
+        const titleEl = document.getElementById('input-modal-title');
+        const fieldsContainer = document.getElementById('input-modal-fields');
+        const confirmBtn = document.getElementById('input-modal-confirm');
+
+        titleEl.textContent = title;
+        fieldsContainer.innerHTML = `
+            <div>
+                <label class="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">${label}</label>
+                <input type="text" id="input-modal-field-0"
+                    class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="${placeholder}" value="${defaultValue}">
+            </div>
+        `;
+
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        setTimeout(() => {
+            content.classList.remove('scale-95', 'opacity-0');
+            content.classList.add('scale-100', 'opacity-100');
+            document.getElementById('input-modal-field-0').focus();
+        }, 10);
+
+        const handleConfirm = () => {
+            const value = document.getElementById('input-modal-field-0').value.trim();
+            closeInputModal();
+            resolve(value || null);
+            cleanup();
+        };
+
+        const handleCancel = () => {
+            closeInputModal();
+            resolve(null);
+            cleanup();
+        };
+
+        const handleKeyPress = (e) => {
+            if (e.key === 'Enter') handleConfirm();
+            if (e.key === 'Escape') handleCancel();
+        };
+
+        const cleanup = () => {
+            confirmBtn.removeEventListener('click', handleConfirm);
+            fieldsContainer.removeEventListener('keypress', handleKeyPress);
+        };
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        fieldsContainer.addEventListener('keypress', handleKeyPress);
+    });
+}
+
+function showMultiInputModal(title, fields) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('input-modal');
+        const content = document.getElementById('input-modal-content');
+        const titleEl = document.getElementById('input-modal-title');
+        const fieldsContainer = document.getElementById('input-modal-fields');
+        const confirmBtn = document.getElementById('input-modal-confirm');
+
+        titleEl.textContent = title;
+        fieldsContainer.innerHTML = fields.map((field, index) => {
+            if (field.type === 'checkbox') {
+                return `
+                    <div class="flex items-center gap-2 mt-4">
+                        <input type="checkbox" id="input-modal-field-${index}"
+                            class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                            ${field.defaultValue ? 'checked' : ''}>
+                        <label for="input-modal-field-${index}" class="text-sm font-medium text-gray-700 dark:text-gray-300 select-none cursor-pointer">${field.label}</label>
+                    </div>
+                `;
+            }
+            return `
+                <div>
+                    <label class="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">${field.label}</label>
+                    <input type="text" id="input-modal-field-${index}"
+                        class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="${field.placeholder || ''}" value="${field.defaultValue || ''}">
+                </div>
+            `;
+        }).join('');
+
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        setTimeout(() => {
+            content.classList.remove('scale-95', 'opacity-0');
+            content.classList.add('scale-100', 'opacity-100');
+            document.getElementById('input-modal-field-0').focus();
+        }, 10);
+
+        const handleConfirm = () => {
+            const values = fields.map((field, index) => {
+                const el = document.getElementById(`input-modal-field-${index}`);
+                if (field.type === 'checkbox') return el.checked;
+                return el.value.trim();
+            });
+            closeInputModal();
+            // Return null if any required text field is empty
+            const allFilled = values.every((v, i) => {
+                if (fields[i].type === 'checkbox') return true;
+                return v !== '';
+            });
+            resolve(allFilled ? values : null);
+            cleanup();
+        };
+
+        const handleCancel = () => {
+            closeInputModal();
+            resolve(null);
+            cleanup();
+        };
+
+        const handleKeyPress = (e) => {
+            if (e.key === 'Enter') handleConfirm();
+            if (e.key === 'Escape') handleCancel();
+        };
+
+        const cleanup = () => {
+            confirmBtn.removeEventListener('click', handleConfirm);
+            fieldsContainer.removeEventListener('keypress', handleKeyPress);
+        };
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        fieldsContainer.addEventListener('keypress', handleKeyPress);
+    });
+}
+
+function closeInputModal() {
+    const modal = document.getElementById('input-modal');
+    const content = document.getElementById('input-modal-content');
+    content.classList.remove('scale-100', 'opacity-100');
+    content.classList.add('scale-95', 'opacity-0');
+    setTimeout(() => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }, 200);
+}
+
+function switchSettingsTab(tabName) {
+    // Update tab buttons
+    const tabs = ['configurations', 'system-prompt'];
+    tabs.forEach(tab => {
+        const tabButton = document.getElementById(`tab-${tab}`);
+        const tabContent = document.getElementById(`settings-tab-${tab}`);
+
+        if (tab === tabName) {
+            // Activate this tab
+            tabButton.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400');
+            tabButton.classList.add('border-blue-600', 'text-blue-600', 'dark:text-blue-400');
+            tabContent.classList.remove('hidden');
+        } else {
+            // Deactivate other tabs
+            tabButton.classList.remove('border-blue-600', 'text-blue-600', 'dark:text-blue-400');
+            tabButton.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400');
+            tabContent.classList.add('hidden');
+        }
+    });
+}
+
+function toggleDarkMode() {
+    if (document.documentElement.classList.contains('dark')) {
+        document.documentElement.classList.remove('dark');
+        localStorage.theme = 'light';
+    } else {
+        document.documentElement.classList.add('dark');
+        localStorage.theme = 'dark';
+    }
+}
+
+function formatTimestamp(timestamp) {
+    const date = new Date(timestamp * 1000);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()} ${date.toLocaleTimeString()}`;
+}
+
+function scrollToBottom() {
+    elements.chatMessages.scrollTo({
+        top: elements.chatMessages.scrollHeight,
+        behavior: 'smooth'
+    });
+    // state.isScrolledManually is handled by scroll event
+    elements.jumpToBottomButton.classList.remove('opacity-100', 'translate-y-0');
+    elements.jumpToBottomButton.classList.add('opacity-0', 'translate-y-4');
+}
+
+function handleScroll() {
+    const { scrollTop, scrollHeight, clientHeight } = elements.chatMessages;
+    const isAtBottom = Math.abs((scrollHeight - clientHeight) - scrollTop) < 50;
+
+    if (!isAtBottom) {
+        state.isScrolledManually = true;
+        elements.jumpToBottomButton.classList.remove('opacity-0', 'translate-y-4');
+        elements.jumpToBottomButton.classList.add('opacity-100', 'translate-y-0');
+    } else {
+        state.isScrolledManually = false;
+        elements.jumpToBottomButton.classList.remove('opacity-100', 'translate-y-0');
+        elements.jumpToBottomButton.classList.add('opacity-0', 'translate-y-4');
+    }
+}
+
+function copyToClipboard(text, button) {
+    navigator.clipboard.writeText(text)
+        .then(() => {
+            const originalIcon = button.innerHTML;
+            button.innerHTML = '<i class="fa-solid fa-check text-green-500"></i>';
+            setTimeout(() => {
+                button.innerHTML = originalIcon;
+            }, 2000);
+        })
+        .catch(err => console.error('Failed to copy:', err));
+}
+
+// WebSocket and API Logic
+function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const token = state.authToken || '';
+    const wsUrl = `${protocol}//${window.location.host}/ws/${state.clientId}?token=${token}`;
+
+    state.ws = new WebSocket(wsUrl);
+
+    state.ws.onopen = () => console.log('WebSocket connected');
+    state.ws.onmessage = (event) => handleWebSocketMessage(JSON.parse(event.data));
+    state.ws.onclose = () => setTimeout(connectWebSocket, 3000);
+    state.ws.onerror = (error) => console.error('WebSocket error:', error);
+}
+
+function handleWebSocketMessage(data) {
+    switch (data.type) {
+        case 'conversation_created':
+        case 'conversation_deleted':
+        case 'message_added':
+            loadConversations();
+            if (data.type === 'message_added' && state.currentConversationId === data.conversation_id) {
+                // Update the last message ID if it's missing (from streaming)
+                const lastMessage = elements.messagesContainer.lastElementChild;
+                if (lastMessage && !lastMessage.dataset.messageId && data.message_id) {
+                    lastMessage.dataset.messageId = data.message_id;
+
+                    // Update regenerate button
+                    const regenerateBtn = lastMessage.querySelector('.regenerate-button');
+                    if (regenerateBtn) {
+                        regenerateBtn.onclick = () => regenerateResponse(lastMessage, data.message_id);
+                    }
+
+                    // Update edit button
+                    const editBtn = lastMessage.querySelector('.edit-button');
+                    if (editBtn) {
+                        editBtn.onclick = () => openEditModal(lastMessage, data.message_id, lastMessage.querySelector('.prose').innerHTML);
+                    }
+                }
+            } else if (data.type === 'conversation_deleted' && state.currentConversationId === data.conversation_id) {
+                startNewConversation();
+            }
+            break;
+
+        case 'message_edited':
+            const messageDiv = document.querySelector(`[data-message-id="${data.message_id}"]`);
+            if (messageDiv) {
+                if (data.role === 'assistant') {
+                    updateAssistantMessage(data.content, messageDiv);
+                } else {
+                    // Update user message content
+                    const contentDiv = messageDiv.querySelector('.prose');
+                    if (contentDiv) contentDiv.textContent = data.content;
+
+                    // Update edit button onclick
+                    const editBtn = messageDiv.querySelector('button[onclick^="openEditModal"]');
+                    if (editBtn) {
+                        editBtn.onclick = () => openEditModal(messageDiv, data.message_id, data.content);
+                    }
+                }
+            }
+            break;
+
+        case 'summary_updated':
+            const conversationElement = document.querySelector(`[data-conversation-id="${data.conversation_id}"]`);
+            if (conversationElement) {
+                const summaryElement = conversationElement.querySelector('.summary-text');
+                if (summaryElement) {
+                    summaryElement.textContent = data.summary || 'No summary';
+                }
+            }
+            break;
+    }
+}
+
+// Project Management
+async function loadProjects() {
+    try {
+        const response = await authFetch('/projects');
+        const data = await response.json();
+        state.projects = data.projects;
+
+        const selector = elements.projectSelector;
+        selector.innerHTML = '';
+
+        data.projects.forEach(project => {
+            const option = document.createElement('option');
+            option.value = project.project_id;
+            option.textContent = project.name;
+            selector.appendChild(option);
+        });
+
+        // Set initial project if not set
+        if (!state.currentProjectId && data.projects.length > 0) {
+            // Prefer "General" project if exists, otherwise first one
+            const generalProject = data.projects.find(p => p.name === 'General');
+            state.currentProjectId = generalProject ? generalProject.project_id : data.projects[0].project_id;
+        }
+
+        if (state.currentProjectId) {
+            selector.value = state.currentProjectId;
+        }
+    } catch (error) {
+        console.error('Error loading projects:', error);
+        showToast('Failed to load projects', 'error');
+    }
+}
+
+async function handleProjectChange(event) {
+    state.currentProjectId = event.target.value;
+    await loadConversations();
+    startNewConversation();
+}
+
+function createNewProject() {
+    elements.projectModalTitle.textContent = 'Create New Project';
+    elements.projectIdInput.value = '';
+    elements.projectNameInput.value = '';
+    elements.projectDescInput.value = '';
+    elements.projectPromptInput.value = '';
+    elements.deleteProjectBtn.classList.add('hidden');
+
+    openProjectModal();
+}
+
+function openProjectModal() {
+    // If editing existing project (not creating new), populate fields
+    if (elements.projectModalTitle.textContent !== 'Create New Project') {
+        const project = state.projects.find(p => p.project_id === state.currentProjectId);
+        if (project) {
+            elements.projectModalTitle.textContent = 'Project Settings';
+            elements.projectIdInput.value = project.project_id;
+            elements.projectNameInput.value = project.name;
+            elements.projectDescInput.value = project.description || '';
+            elements.projectPromptInput.value = project.system_prompt || '';
+
+            // Show delete button only if not "General" project (optional safety)
+            if (project.name !== 'General') {
+                elements.deleteProjectBtn.classList.remove('hidden');
+            } else {
+                elements.deleteProjectBtn.classList.add('hidden');
+            }
+        }
+    }
+
+    elements.projectModal.classList.remove('hidden');
+    elements.projectModal.classList.add('flex');
+    setTimeout(() => {
+        elements.projectModalContent.classList.remove('scale-95', 'opacity-0');
+        elements.projectModalContent.classList.add('scale-100', 'opacity-100');
+    }, 10);
+}
+
+function closeProjectModal() {
+    elements.projectModalContent.classList.remove('scale-100', 'opacity-100');
+    elements.projectModalContent.classList.add('scale-95', 'opacity-0');
+    setTimeout(() => {
+        elements.projectModal.classList.add('hidden');
+        elements.projectModal.classList.remove('flex');
+        // Reset title for next time
+        elements.projectModalTitle.textContent = 'Project Settings';
+    }, 200);
+}
+
+async function saveProject() {
+    const id = elements.projectIdInput.value;
+    const name = elements.projectNameInput.value.trim();
+    const description = elements.projectDescInput.value.trim();
+    const system_prompt = elements.projectPromptInput.value.trim();
+
+    if (!name) {
+        showToast('Project name is required', 'error');
+        return;
+    }
+
+    const projectData = { name, description, system_prompt };
+
+    try {
+        let response;
+        if (id) {
+            response = await fetch(`/projects/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(projectData)
+            });
+        } else {
+            response = await authFetch('/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(projectData)
+            });
+        }
+
+        if (response.ok) {
+            const result = await response.json();
+            showToast('Project saved successfully!');
+            closeProjectModal();
+            await loadProjects();
+
+            // If created new project, switch to it
+            if (!id && result.id) {
+                state.currentProjectId = result.id;
+                elements.projectSelector.value = result.id;
+                handleProjectChange({ target: { value: result.id } });
+            } else if (id === state.currentProjectId) {
+                // If updated current project, reload to reflect changes (e.g. system prompt)
+                startNewConversation();
+            }
+        } else {
+            showToast('Failed to save project', 'error');
+        }
+    } catch (error) {
+        console.error('Error saving project:', error);
+        showToast('Failed to save project', 'error');
+    }
+}
+
+async function deleteProject() {
+    const id = elements.projectIdInput.value;
+    if (!id) return;
+
+    showModal('Delete Project', 'Are you sure? This will delete all conversations in this project.', 'confirm', async () => {
+        try {
+            const response = await fetch(`/projects/${id}`, { method: 'DELETE' });
+            if (response.ok) {
+                showToast('Project deleted successfully');
+                closeProjectModal();
+                state.currentProjectId = null; // Force reset
+                await loadProjects();
+                await loadConversations();
+                startNewConversation();
+            } else {
+                showToast('Failed to delete project', 'error');
+            }
+        } catch (error) {
+            console.error('Error deleting project:', error);
+            showToast('Failed to delete project', 'error');
+        }
+    });
+}
+
+async function loadConversations() {
+    if (state.isLoading) return;
+
+    try {
+        state.isLoading = true;
+        const url = state.currentProjectId ? `/conversations?project_id=${state.currentProjectId}` : '/conversations';
+        const response = await fetch(url);
+        const data = await response.json();
+        const conversationsList = document.getElementById('conversations-list');
+
+        data.conversations.sort((a, b) => b.last_updated - a.last_updated);
+
+        const newConvs = data.conversations.map(conv => {
+            const lastUpdated = formatTimestamp(conv.last_updated);
+            const isActive = conv.conversation_id === state.currentConversationId;
+            const activeClass = isActive ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50 border-transparent';
+
+            return `
+                <div class="group w-full p-2.5 rounded-xl border transition-all duration-200 cursor-pointer mb-2 relative ${activeClass}" 
+                     onclick="loadConversation('${conv.conversation_id}')"
+                     data-conversation-id="${conv.conversation_id}">
+                    <div class="flex flex-col gap-1">
+                        <div class="flex items-center justify-between gap-1">
+                            <div class="text-sm font-medium text-gray-700 dark:text-gray-200 truncate flex-1 summary-text">
+                                ${conv.summary || 'New Conversation'}
+                            </div>
+                            <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                <button onclick="editConversationTitle('${conv.conversation_id}', event)"
+                                        class="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                                        title="Edit title">
+                                    <i class="fa-solid fa-pen text-xs"></i>
+                                </button>
+                                <button onclick="deleteConversation('${conv.conversation_id}', event)"
+                                        class="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                                        title="Delete">
+                                    <i class="fa-solid fa-trash text-xs"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                            ${lastUpdated}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (conversationsList.innerHTML !== newConvs) {
+            conversationsList.innerHTML = newConvs;
+        }
+    } catch (error) {
+        console.error('Error loading conversations:', error);
+    } finally {
+        state.isLoading = false;
+    }
+}
+
+async function deleteConversation(conversationId, event) {
+    event.stopPropagation();
+
+    showModal('Delete Conversation', 'Are you sure you want to delete this conversation? This action cannot be undone.', 'confirm', async () => {
+        try {
+            await fetch(`/conversations/${conversationId}`, { method: 'DELETE' });
+            // WebSocket will handle the UI update
+        } catch (error) {
+            console.error('Error deleting conversation:', error);
+            showModal('Error', 'Failed to delete conversation', 'error');
+        }
+    });
+}
+
+async function editConversationTitle(conversationId, event) {
+    event.stopPropagation();
+
+    const conversationElement = document.querySelector(`[data-conversation-id="${conversationId}"]`);
+    const summaryElement = conversationElement?.querySelector('.summary-text');
+    const currentTitle = summaryElement?.textContent.trim() || 'New Conversation';
+
+    const newTitle = await showInputModal(
+        'Rename Conversation',
+        'Enter new title',
+        'Conversation title',
+        currentTitle
+    );
+
+    if (!newTitle || newTitle === currentTitle) return;
+
+    try {
+        const response = await fetch(`/conversations/${conversationId}/title`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle })
+        });
+
+        if (response.ok) {
+            summaryElement.textContent = newTitle;
+            showToast('Title updated successfully!');
+        } else {
+            showToast('Failed to update title', 'error');
+        }
+    } catch (error) {
+        console.error('Error updating title:', error);
+        showToast('Failed to update title', 'error');
+    }
+}
+
+async function loadConversation(conversationId) {
+    try {
+        state.currentConversationId = conversationId;
+        const response = await fetch(`/conversations/${conversationId}`);
+        const data = await response.json();
+
+        elements.messagesContainer.innerHTML = '';
+
+        for (const msg of data.messages) {
+            if (msg.role === 'user') {
+                appendUserMessage(msg.content, msg.message_id, msg.attachments);
+            } else if (msg.role === 'assistant') {
+                const msgDiv = createAssistantMessage(msg.message_id, msg.content);
+                updateAssistantMessage(msg.content, msgDiv);
+            }
+        }
+
+        await updateSystemPrompt();
+        loadConversations(); // Update active state in list
+
+        state.isScrolledManually = false;
+        setTimeout(scrollToBottom, 100);
+
+        // Close sidebar on mobile when selecting a conversation
+        if (window.innerWidth < 640) {
+            closeSidebar();
+        }
+    } catch (error) {
+        console.error('Error loading conversation:', error);
+    }
+}
+
+async function startNewConversation() {
+    elements.messagesContainer.innerHTML = `
+        <div class="flex flex-col items-center justify-center h-full text-center text-gray-400 mt-20 opacity-50">
+            <div class="w-16 h-16 bg-gray-200 dark:bg-gray-800 rounded-2xl flex items-center justify-center mb-4">
+                <i class="fa-solid fa-comments text-2xl"></i>
+            </div>
+            <p class="text-sm">Start a new conversation</p>
+        </div>
+    `;
+    state.currentConversationId = null;
+    elements.messageInput.value = '';
+    elements.messageInput.style.height = 'auto';
+    elements.fileInput.value = '';
+    elements.filePreviewContainer.innerHTML = '';
+    elements.filePreviewContainer.classList.add('hidden');
+    elements.filePreviewContainer.classList.add('hidden');
+
+    // Update system prompt based on project
+    if (state.currentProjectId) {
+        const project = state.projects.find(p => p.project_id === state.currentProjectId);
+        if (project && project.system_prompt) {
+            elements.systemPrompt.value = project.system_prompt;
+        } else {
+            await updateSystemPrompt();
+        }
+    } else {
+        await updateSystemPrompt();
+    }
+
+    loadConversations(); // Update active state
+
+    if (window.innerWidth < 640) {
+        closeSidebar();
+    }
+}
+
+function appendUserMessage(content, messageId, attachments = []) {
+    // Remove empty state if present
+    if (elements.messagesContainer.querySelector('.text-center.opacity-50')) {
+        elements.messagesContainer.innerHTML = '';
+    }
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'flex justify-end message-bubble group animate-fade-in';
+    if (messageId) messageDiv.dataset.messageId = messageId;
+
+    let attachmentsHtml = '';
+    if (attachments && attachments.length > 0) {
+        attachmentsHtml = '<div class="flex flex-wrap gap-2 mb-2 justify-end">';
+        attachments.forEach(att => {
+            const isImage = att.type?.startsWith('image/') || att.file_type?.startsWith('image/');
+            // Handle both File objects (upload) and DB objects (history)
+            const name = att.name || att.file_name;
+
+            if (isImage) {
+                let src = '';
+                if (att instanceof File) {
+                    src = URL.createObjectURL(att);
+                } else {
+                    // For history items, we need an endpoint or base64. 
+                    // Since we don't have an endpoint yet, we'll use a placeholder or check if we can get base64.
+                    // Ideally, we should add an endpoint /attachments/{id}
+                    // For now, let's show the icon for history to avoid broken images, 
+                    // unless we have the data url (which we don't store in history currently).
+                    // UPDATE: We will implement the endpoint next. For now, assume it exists or fallback.
+                    src = `/attachments/${att.attachment_id}`;
+                }
+
+                attachmentsHtml += `
+                    <div class="group/image relative">
+                        <img src="${src}" alt="${name}" class="h-20 w-auto rounded-lg border border-blue-500/30 object-cover cursor-pointer hover:opacity-90 transition-opacity" onclick="window.open(this.src, '_blank')">
+                        <div class="absolute inset-0 bg-black/0 group-hover/image:bg-black/10 transition-colors rounded-lg"></div>
+                    </div>
+                `;
+            } else {
+                attachmentsHtml += `
+                    <div class="flex items-center gap-2 bg-blue-700/50 rounded-lg px-3 py-2 text-xs text-blue-100 border border-blue-500/30">
+                        <i class="fa-solid fa-file"></i>
+                        <span class="max-w-[150px] truncate">${name}</span>
+                    </div>
+                `;
+            }
+        });
+        attachmentsHtml += '</div>';
+    }
+
+    messageDiv.innerHTML = `
+        <div class="max-w-[85%] sm:max-w-[75%] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-md relative mb-2">
+            ${attachmentsHtml}
+            <div class="prose prose-invert max-w-none text-sm sm:text-base leading-relaxed break-words">
+                ${content}
+            </div>
+            <button onclick="openEditModal(this.closest('.message-bubble'), '${messageId || ''}', \`${content.replace(/`/g, '\\`').replace(/"/g, '&quot;')}\`)" 
+                    class="absolute top-2 right-2 p-1 text-blue-200 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                <i class="fa-solid fa-pen text-xs"></i>
+            </button>
+        </div>
+    `;
+
+    elements.messagesContainer.appendChild(messageDiv);
+    scrollToBottom();
+}
+
+function createAssistantMessage(messageId, content = '') {
+    // Remove empty state if present
+    if (elements.messagesContainer.querySelector('.text-center.opacity-50')) {
+        elements.messagesContainer.innerHTML = '';
+    }
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'flex justify-start message-bubble group w-full animate-fade-in';
+    if (messageId) messageDiv.dataset.messageId = messageId;
+
+    messageDiv.innerHTML = `
+        <div class="flex max-w-full w-full">
+            <div class="flex-1 min-w-0">
+                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl rounded-tl-sm px-5 py-4 shadow-sm relative mb-2">
+                    <div class="message-content prose prose-slate dark:prose-invert max-w-none text-sm sm:text-base leading-relaxed break-words">
+                        ${content || '<div class="typing-indicator flex gap-1 py-2"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>'}
+                    </div>
+                    <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white dark:bg-gray-800 rounded-lg p-1 shadow-sm border border-gray-100 dark:border-gray-700">
+                        <button class="regenerate-button p-1.5 text-gray-400 hover:text-blue-500 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Regenerate">
+                            <i class="fa-solid fa-rotate-right text-xs"></i>
+                        </button>
+                        <button class="edit-button p-1.5 text-gray-400 hover:text-blue-500 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Edit">
+                            <i class="fa-solid fa-pen text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Bind events
+    const regenerateBtn = messageDiv.querySelector('.regenerate-button');
+    regenerateBtn.onclick = () => regenerateResponse(messageDiv, messageId);
+
+    const editBtn = messageDiv.querySelector('.edit-button');
+    editBtn.onclick = () => openEditModal(messageDiv, messageId, content);
+    elements.messagesContainer.appendChild(messageDiv);
+    return messageDiv;
+}
+
+function updateAssistantMessage(content, messageDiv = null) {
+    if (!messageDiv) {
+        if (!state.currentAssistantMessage) {
+            state.currentAssistantMessage = createAssistantMessage(null, '');
+        }
+        messageDiv = state.currentAssistantMessage;
+    }
+
+    const contentDiv = messageDiv.querySelector('.message-content');
+
+    // Configure marked
+    marked.setOptions({
+        gfm: true,
+        breaks: true,
+        highlight: function (code, language) {
+            if (language && hljs.getLanguage(language)) {
+                try {
+                    return hljs.highlight(code, { language }).value;
+                } catch (err) { }
+            }
+            return code;
+        }
+    });
+
+    // Parse content
+    let parsedContent = marked.parse(content);
+
+    // Sanitize content
+    parsedContent = DOMPurify.sanitize(parsedContent);
+
+    // Update content
+    contentDiv.innerHTML = parsedContent;
+
+    // Render Math
+    renderMathInElement(contentDiv, {
+        delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '$', right: '$', display: false },
+            { left: '\\(', right: '\\)', display: false },
+            { left: '\\[', right: '\\]', display: true }
+        ],
+        throwOnError: false
+    });
+
+    // Check if user is near bottom before scrolling
+    const container = document.getElementById('chat-messages');
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+
+    if (isNearBottom || !state.isScrolledManually) {
+        scrollToBottom();
+    }
+
+    // Apply syntax highlighting and copy buttons
+    contentDiv.querySelectorAll('pre code').forEach(block => {
+        hljs.highlightElement(block);
+
+        const pre = block.parentNode;
+        if (!pre.querySelector('.copy-button')) {
+            const copyButton = document.createElement('button');
+            copyButton.className = 'copy-button absolute top-2 right-2 p-1.5 text-gray-400 hover:text-white bg-gray-800/50 hover:bg-gray-700 rounded-md transition-colors opacity-0 group-hover:opacity-100';
+            copyButton.innerHTML = '<i class="fa-regular fa-copy"></i>';
+            copyButton.onclick = (e) => {
+                e.preventDefault();
+                copyToClipboard(block.textContent, copyButton);
+            };
+            pre.style.position = 'relative';
+            pre.classList.add('group');
+            pre.appendChild(copyButton);
+        }
+    });
+
+    // Update edit button content reference
+    const editBtn = messageDiv.querySelector('.edit-button');
+    if (editBtn) {
+        editBtn.onclick = () => openEditModal(messageDiv, messageDiv.dataset.messageId, content);
+    }
+
+    if (!state.isScrolledManually) {
+        scrollToBottom();
+    }
+}
+
+// Message Editing
+function openEditModal(messageDiv, messageId, content) {
+    const modal = document.getElementById('message-edit-modal');
+    const contentInput = document.getElementById('edit-message-content');
+    const messageIdInput = document.getElementById('edit-message-id');
+
+    state.editingMessageDiv = messageDiv;
+    state.editingMessageId = messageId;
+
+    contentInput.value = content;
+    messageIdInput.value = messageId;
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    contentInput.focus();
+}
+
+function closeModal() {
+    const modal = document.getElementById('custom-modal');
+    modal.classList.add('hidden');
+}
+
+function showToast(message, type = 'success') {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+
+    container.appendChild(toast);
+
+    // Auto remove after 3 seconds
+    setTimeout(() => {
+        toast.style.animation = 'slideOut 0.3s ease-out';
+        setTimeout(() => {
+            if (container.contains(toast)) {
+                container.removeChild(toast);
+            }
+        }, 300);
+    }, 3000);
+}
+function closeEditModal() {
+    const modal = document.getElementById('message-edit-modal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    state.editingMessageDiv = null;
+    state.editingMessageId = null;
+}
+
+document.getElementById('message-edit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const content = document.getElementById('edit-message-content').value.trim();
+    const messageId = document.getElementById('edit-message-id').value;
+
+    if (!content || !state.editingMessageId) return;
+
+    try {
+        const response = await fetch(`/messages/${state.editingMessageId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content })
+        });
+
+        if (!response.ok) throw new Error('Failed to save message');
+
+        closeEditModal();
+        // UI update handled by WebSocket
+    } catch (error) {
+        console.error('Error updating message:', error);
+        showModal('Error', 'Failed to update message', 'error');
+    }
+});
+
+// Chat Submission
+elements.chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const message = elements.messageInput.value.trim();
+    const files = state.selectedFiles;
+
+    if (!message && !files.length) return;
+
+    state.abortController = new AbortController();
+
+    elements.messageInput.value = '';
+    elements.messageInput.style.height = 'auto';
+    elements.sendButton.disabled = true;
+    elements.sendButton.classList.add('hidden');
+    elements.stopButton.classList.remove('hidden');
+
+    try {
+        if (!state.currentConversationId) {
+            const response = await authFetch('/create_conversation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project_id: state.currentProjectId })
+            });
+            const data = await response.json();
+            state.currentConversationId = data.conversation_id;
+
+            // Update URL without reloading
+            const url = new URL(window.location);
+            url.searchParams.set('c', state.currentConversationId);
+            window.history.pushState({}, '', url);
+        }
+
+        appendUserMessage(message, null, files);
+
+        elements.filePreviewContainer.innerHTML = '';
+        elements.filePreviewContainer.classList.add('hidden');
+        state.selectedFiles = []; // Clear selected files
+
+        const formData = new FormData();
+        formData.append('message', message);
+        formData.append('system_prompt', elements.systemPrompt.value.trim() || 'You are a helpful assistant');
+        formData.append('conversation_id', state.currentConversationId);
+        formData.append('client_id', state.clientId);
+
+        Array.from(files).forEach(file => formData.append('files', file));
+
+        elements.fileInput.value = '';
+
+        state.currentAssistantMessage = createAssistantMessage();
+        let responseText = '';
+
+        const response = await authFetch('/chat', {
+            method: 'POST',
+            body: formData,
+            signal: state.abortController.signal
+        });
+
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+
+            // Check if chunk contains error marker
+            if (chunk.includes('__ERROR__:')) {
+                const errorMessage = chunk.split('__ERROR__:')[1];
+                showModal('API Error', errorMessage, 'error');
+                state.currentAssistantMessage = null;
+                break;
+            }
+
+            responseText += chunk;
+            updateAssistantMessage(responseText);
+        }
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error('Error:', error);
+            state.currentAssistantMessage = null;
+            // Use modal for error instead of appending message
+            showModal('Error', 'Something went wrong: ' + error.message, 'error');
+        }
+    } finally {
+        elements.sendButton.disabled = false;
+        elements.sendButton.classList.remove('hidden');
+        elements.stopButton.classList.add('hidden');
+        state.abortController = null;
+        state.currentAssistantMessage = null;
+    }
+});
+
+elements.messageInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        elements.chatForm.requestSubmit();
+    }
+});
+
+elements.stopButton.addEventListener('click', () => {
+    if (state.abortController) state.abortController.abort();
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: 'stop_generation' })); // Assuming backend handles this
+    }
+});
+
+// File Input
+elements.fileInput.addEventListener('change', (e) => {
+    const newFiles = Array.from(e.target.files);
+    state.selectedFiles = [...state.selectedFiles, ...newFiles];
+    updateFilePreviews();
+    elements.fileInput.value = ''; // Reset input to allow selecting same file again
+});
+
+function updateFilePreviews() {
+    const previewContainer = elements.filePreviewContainer;
+    previewContainer.innerHTML = '';
+
+    if (state.selectedFiles.length > 0) {
+        previewContainer.classList.remove('hidden');
+
+        state.selectedFiles.forEach((file, index) => {
+            const previewDiv = document.createElement('div');
+            previewDiv.className = 'flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-lg px-3 py-2 flex-shrink-0 border border-gray-200 dark:border-gray-700';
+
+            let contentHtml = '';
+            if (file.type.startsWith('image/')) {
+                const url = URL.createObjectURL(file);
+                contentHtml = `<img src="${url}" class="w-8 h-8 object-cover rounded border border-gray-300 dark:border-gray-600">`;
+            } else {
+                let iconClass = 'fa-file';
+                if (file.type.startsWith('text/')) iconClass = 'fa-file-code';
+                contentHtml = `<i class="fa-solid ${iconClass} text-gray-500 text-lg"></i>`;
+            }
+
+            previewDiv.innerHTML = `
+                ${contentHtml}
+                <span class="text-xs text-gray-700 dark:text-gray-300 max-w-[150px] truncate">${file.name}</span>
+                <button type="button" class="text-gray-400 hover:text-red-500 transition-colors ml-1" onclick="removeFile(${index})">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            `;
+            previewContainer.appendChild(previewDiv);
+        });
+    } else {
+        previewContainer.classList.add('hidden');
+    }
+}
+
+function removeFile(index) {
+    state.selectedFiles.splice(index, 1);
+    updateFilePreviews();
+}
+
+// Settings and Prompts
+async function updateSystemPrompt() {
+    try {
+        const response = await fetch(`/get_system_prompt?conversation_id=${state.currentConversationId || ''}`);
+        const data = await response.json();
+        elements.systemPrompt.value = data.system_prompt;
+    } catch (error) {
+        console.error('Error fetching system prompt:', error);
+    }
+}
+
+async function loadPrompts() {
+    try {
+        const response = await authFetch('/prompts');
+        const data = await response.json();
+
+        elements.promptSelector.innerHTML = '';
+        data.prompts.forEach(prompt => {
+            const option = document.createElement('option');
+            option.value = prompt.id;
+            option.textContent = prompt.name;
+            if (prompt.is_active) option.selected = true;
+            elements.promptSelector.appendChild(option);
+        });
+
+        // Load the active prompt's content
+        if (data.prompts.length > 0) {
+            const activePrompt = data.prompts.find(p => p.is_active) || data.prompts[0];
+            const promptResponse = await fetch(`/prompts/${activePrompt.id}`);
+            const promptData = await promptResponse.json();
+            elements.systemPrompt.value = promptData.content;
+        }
+    } catch (error) {
+        console.error('Error loading prompts:', error);
+    }
+}
+
+async function handlePromptChange(e) {
+    const promptId = e.target.value;
+    if (!promptId) return;
+
+    try {
+        // Activate prompt
+        await fetch(`/prompts/${promptId}/activate`, { method: 'POST' });
+
+        // Get prompt content
+        const response = await fetch(`/prompts/${promptId}`);
+        const data = await response.json();
+        elements.systemPrompt.value = data.content;
+
+        showToast('Prompt activated!');
+    } catch (error) {
+        console.error('Error changing prompt:', error);
+    }
+}
+
+function handlePromptTextChange() {
+    // For now, we'll just let the user click save
+}
+
+async function savePromptChanges() {
+    const promptSelector = elements.promptSelector;
+    const promptText = elements.systemPrompt;
+
+    const selectedPromptId = promptSelector.value;
+    if (!selectedPromptId) {
+        showToast('Please select a prompt first', 'error');
+        return;
+    }
+
+    const promptName = promptSelector.options[promptSelector.selectedIndex].text;
+
+    try {
+        const response = await fetch(`/prompts/${selectedPromptId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: promptName,
+                text: promptText.value
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to save prompt');
+        }
+
+        // Also set as active
+        await fetch(`/prompts/${selectedPromptId}/activate`, { method: 'POST' });
+
+        showToast('Prompt saved and activated!');
+    } catch (error) {
+        console.error('Error saving prompt:', error);
+        showToast(error.message || 'Failed to save prompt', 'error');
+    }
+}
+
+async function createNewPrompt() {
+    const name = await showInputModal(
+        'New Prompt',
+        'Enter prompt name',
+        'e.g., Code Assistant, Creative Writer',
+        'New Prompt'
+    );
+    if (!name) return;
+
+    const promptText = elements.systemPrompt.value || '';
+
+    try {
+        const response = await authFetch('/prompts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                text: promptText
+            })
+        });
+
+        if (!response.ok) throw new Error('Failed to create prompt');
+
+        showToast('Prompt created successfully!');
+        await loadPrompts(); // Changed from loadSystemPrompts
+    } catch (error) {
+        console.error('Error creating prompt:', error);
+        showToast('Failed to create prompt', 'error');
+    }
+}
+
+async function deleteCurrentPrompt() {
+    const promptSelector = elements.promptSelector;
+    const selectedPromptId = promptSelector.value;
+
+    if (!selectedPromptId) {
+        showToast('Please select a prompt first', 'error');
+        return;
+    }
+
+    const promptName = promptSelector.options[promptSelector.selectedIndex].text;
+
+    showModal('Delete Prompt', `Are you sure you want to delete "${promptName}"? This action cannot be undone.`, 'confirm', async () => {
+        try {
+            const response = await fetch(`/prompts/${selectedPromptId}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) throw new Error('Failed to delete prompt');
+
+            showToast('Prompt deleted successfully!');
+            await loadPrompts();
+        } catch (error) {
+            console.error('Error deleting prompt:', error);
+            showToast('Failed to delete prompt', 'error');
+        }
+    });
+}
+
+function handleVisibilityChange() {
+    if (!document.hidden) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+            connectWebSocket();
+        }
+        loadConversations();
+    }
+}
+
+async function initializeSettings() {
+    try {
+        // Load all providers
+        const response = await authFetch('/providers');
+        const data = await response.json();
+
+        elements.settingsSelector.innerHTML = '';
+        data.providers.forEach(provider => {
+            const option = document.createElement('option');
+            option.value = provider.id;
+            option.textContent = provider.name;
+            if (provider.is_default) option.selected = true;
+            elements.settingsSelector.appendChild(option);
+        });
+
+        // Load default provider
+        const defaultResponse = await authFetch('/default_provider');
+        const defaultProvider = await defaultResponse.json();
+        populateProviderForm(defaultProvider);
+
+        // Load models for default provider
+        await loadModels(defaultProvider.id);
+
+    } catch (error) {
+        console.error('Error initializing settings:', error);
+    }
+}
+
+async function updateTopBarInfo() {
+    try {
+        // Load all providers for the dropdown
+        const providersResponse = await authFetch('/providers');
+        const providersData = await providersResponse.json();
+        const providerSelect = document.getElementById('topbar-provider-select');
+
+        if (providerSelect) {
+            providerSelect.innerHTML = '';
+            providersData.providers.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name;
+                if (p.is_default) opt.selected = true;
+                providerSelect.appendChild(opt);
+            });
+
+            // Get default provider details
+            const providerResponse = await authFetch('/default_provider');
+            const provider = await providerResponse.json();
+
+            if (elements.infoHost) elements.infoHost.textContent = new URL(provider.host).hostname;
+
+            // Load models for this provider as dropdown
+            await updateTopBarModels(provider.id);
+        }
+    } catch (error) {
+        console.error('Error updating top bar info:', error);
+    }
+}
+
+async function updateTopBarModels(providerId) {
+    try {
+        const modelsResponse = await fetch(`/providers/${providerId}/models`);
+        const modelsData = await modelsResponse.json();
+        const modelSelect = document.getElementById('topbar-model-select');
+
+        if (modelSelect) {
+            modelSelect.innerHTML = '';
+            modelsData.models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.model_name;
+                if (m.is_default) opt.selected = true;
+                modelSelect.appendChild(opt);
+            });
+
+            if (modelsData.models.length === 0) {
+                const opt = document.createElement('option');
+                opt.textContent = 'No models';
+                modelSelect.appendChild(opt);
+            }
+        }
+    } catch (error) {
+        console.error('Error loading models for top bar:', error);
+    }
+}
+
+async function handleTopBarProviderChange(event) {
+    const providerId = event.target.value;
+    try {
+        // Set as default
+        await fetch(`/providers/${providerId}/set_default`, { method: 'POST' });
+
+        // Update host display
+        const providerResponse = await fetch(`/providers/${providerId}`);
+        const provider = await providerResponse.json();
+        if (elements.infoHost) elements.infoHost.textContent = new URL(provider.host).hostname;
+
+        // Update model dropdown
+        await updateTopBarModels(providerId);
+
+        showToast(`Switched to ${provider.name}`);
+    } catch (error) {
+        console.error('Error switching provider:', error);
+    }
+}
+
+async function handleTopBarModelChange(event) {
+    const modelId = event.target.value;
+    if (!modelId) return;
+    try {
+        await fetch(`/models/${modelId}/set_default`, { method: 'POST' });
+        showToast('Default model updated');
+    } catch (error) {
+        console.error('Error switching model:', error);
+    }
+}
+
+function populateProviderForm(provider) {
+    document.getElementById('api-host').value = provider.host;
+    document.getElementById('api-key').value = provider.api_key;
+    document.getElementById('api-key-header').value = provider.api_key_header || 'Authorization';
+    document.getElementById('temperature').value = provider.temperature;
+    document.getElementById('temp-value').textContent = provider.temperature;
+    document.getElementById('top-p').value = provider.top_p;
+    document.getElementById('top-p-value').textContent = provider.top_p;
+    document.getElementById('reasoning-effort').value = provider.reasoning_effort || 'none';
+    document.getElementById('use-for-summarization').checked = provider.use_for_summarization || false;
+}
+
+async function loadModels(providerId) {
+    try {
+        const response = await fetch(`/providers/${providerId}/models`);
+        const data = await response.json();
+
+        // Display models list in the UI
+        const modelsContainer = document.getElementById('models-list');
+        if (!modelsContainer) return;
+
+        modelsContainer.innerHTML = '';
+        data.models.forEach(model => {
+            const modelDiv = document.createElement('div');
+            modelDiv.className = 'flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded-lg mb-2';
+            modelDiv.innerHTML = `
+                <div class="flex items-center gap-2">
+                    ${model.is_default ? '<i class="fa-solid fa-star text-yellow-500 text-xs"></i>' : ''}
+                    <span class="text-sm">${model.model_name}</span>
+                    ${model.is_multimodal ? '<i class="fa-solid fa-image text-blue-500 text-xs" title="Multimodal"></i>' : ''}
+                </div>
+                <div class="flex gap-1">
+                    ${!model.is_default ? `<button onclick="setDefaultModel(${model.id})" class="p-1 text-gray-400 hover:text-yellow-500 transition-colors" title="Set as default">
+                        <i class="fa-regular fa-star text-xs"></i>
+                    </button>` : ''}
+                    <button onclick="deleteModel(${model.id})" class="p-1 text-gray-400 hover:text-red-500 transition-colors" title="Delete">
+                        <i class="fa-solid fa-trash text-xs"></i>
+                    </button>
+                </div>
+            `;
+            modelsContainer.appendChild(modelDiv);
+        });
+    } catch (error) {
+        console.error('Error loading models:', error);
+    }
+}
+
+async function deleteCurrentProvider() {
+    const providerId = elements.settingsSelector.value;
+    if (!providerId) return;
+
+    const providerName = elements.settingsSelector.options[elements.settingsSelector.selectedIndex].text;
+
+    showModal('Delete Provider', `Are you sure you want to delete "${providerName}"? This will also delete all its models.`, 'confirm', async () => {
+        try {
+            const response = await fetch(`/providers/${providerId}`, { method: 'DELETE' });
+            if (response.ok) {
+                showToast('Provider deleted successfully');
+                state.isInitializingSettings = true;
+                await initializeSettings();
+                state.isInitializingSettings = false;
+                await updateTopBarInfo();
+            } else {
+                showToast('Failed to delete provider', 'error');
+            }
+        } catch (error) {
+            console.error('Error deleting provider:', error);
+            showToast('Failed to delete provider', 'error');
+        }
+    });
+}
+
+async function createNewSettingsConfig() {
+    const values = await showMultiInputModal('New Provider', [
+        {
+            label: 'Provider Name',
+            placeholder: 'e.g., OpenAI, Anthropic, Custom',
+            defaultValue: 'New Provider'
+        },
+        {
+            label: 'API Host',
+            placeholder: 'e.g., http://localhost:8000/v1',
+            defaultValue: 'http://localhost:8000/v1'
+        }
+    ]);
+
+    if (!values) return;
+
+    const [name, host] = values;
+
+    try {
+        const newProvider = {
+            name: name,
+            host: host,
+            temperature: 1.0,
+            top_p: 0.95,
+            reasoning_effort: 'none',
+            use_for_summarization: false,
+            api_key: ''
+        };
+
+        const response = await authFetch('/providers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newProvider)
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to create provider');
+        }
+
+        const data = await response.json();
+        showToast('Provider created successfully!');
+
+        // Reload providers list and select the new one
+        await initializeSettings();
+        elements.settingsSelector.value = data.id;
+        elements.settingsSelector.dispatchEvent(new Event('change'));
+
+    } catch (error) {
+        console.error('Error creating provider:', error);
+        showToast(error.message || 'Failed to create provider', 'error');
+    }
+}
+
+async function handleSettingsChange(e) {
+    const providerId = e.target.value;
+    try {
+        const response = await fetch(`/providers/${providerId}`);
+        const provider = await response.json();
+        populateProviderForm(provider);
+
+        // Load models for this provider
+        await loadModels(providerId);
+
+        // Auto-activate the selected provider (skip during initialization)
+        if (!state.isInitializingSettings) {
+            await setDefaultSettings(false);
+        }
+    } catch (error) {
+        console.error('Error loading provider:', error);
+    }
+}
+
+async function saveSettings() {
+    const provider = {
+        name: elements.settingsSelector.options[elements.settingsSelector.selectedIndex].text,
+        host: document.getElementById('api-host').value,
+        api_key: document.getElementById('api-key').value,
+        api_key_header: document.getElementById('api-key-header').value || 'Authorization',
+        temperature: parseFloat(document.getElementById('temperature').value),
+        top_p: parseFloat(document.getElementById('top-p').value),
+        reasoning_effort: document.getElementById('reasoning-effort').value,
+        use_for_summarization: document.getElementById('use-for-summarization').checked
+    };
+
+    const providerId = elements.settingsSelector.value;
+
+    try {
+        await fetch(`/providers/${providerId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(provider)
+        });
+        showToast('Provider settings saved!');
+
+        // Set as default and update top bar
+        await setDefaultSettings(true);
+
+        // Reload provider data to reflect changes
+        const response = await fetch(`/providers/${providerId}`);
+        const updatedProvider = await response.json();
+        populateProviderForm(updatedProvider);
+    } catch (error) {
+        console.error('Error saving provider:', error);
+        showToast('Failed to save settings', 'error');
+    }
+}
+
+async function setDefaultSettings(silent = false) {
+    const providerId = elements.settingsSelector.value;
+    try {
+        await fetch(`/providers/${providerId}/set_default`, { method: 'POST' });
+        if (!silent) {
+            showToast('Default provider updated!');
+        }
+    } catch (error) {
+        console.error('Error setting default:', error);
+        if (!silent) {
+            showToast('Failed to set default provider', 'error');
+        }
+    }
+    await updateTopBarInfo();
+}
+
+async function addModel() {
+    const providerId = elements.settingsSelector.value;
+
+    const values = await showMultiInputModal('Add Model', [
+        {
+            label: 'Model Name',
+            placeholder: 'e.g., gpt-4, claude-3-opus',
+            defaultValue: '',
+            type: 'text'
+        },
+        {
+            label: 'Is Multimodal?',
+            defaultValue: false,
+            type: 'checkbox'
+        }
+    ]);
+
+    if (!values) return;
+    const [modelName, isMultimodal] = values;
+
+    try {
+        await fetch(`/providers/${providerId}/models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_name: modelName,
+                is_multimodal: isMultimodal
+            })
+        });
+        showToast('Model added successfully!');
+        await loadModels(providerId);
+    } catch (error) {
+        console.error('Error adding model:', error);
+        showToast('Failed to add model', 'error');
+    }
+}
+
+async function deleteModel(modelId) {
+    showModal('Delete Model', 'Are you sure you want to delete this model? This action cannot be undone.', 'confirm', async () => {
+        try {
+            await fetch(`/models/${modelId}`, { method: 'DELETE' });
+            showToast('Model deleted successfully!');
+            const providerId = elements.settingsSelector.value;
+            await loadModels(providerId);
+        } catch (error) {
+            console.error('Error deleting model:', error);
+            showToast('Failed to delete model', 'error');
+        }
+    });
+}
+
+async function setDefaultModel(modelId) {
+    try {
+        await fetch(`/models/${modelId}/set_default`, { method: 'POST' });
+        showToast('Default model updated!');
+        const providerId = elements.settingsSelector.value;
+        await loadModels(providerId);
+    } catch (error) {
+        console.error('Error setting default model:', error);
+        showToast('Failed to set default model', 'error');
+    }
+    await updateTopBarInfo();
+}
+
+function loadVersion() {
+    authFetch('/version')
+        .then(res => res.json())
+        .then(data => {
+            document.getElementById('version-display').textContent = `v${data.version}`;
+        })
+        .catch(console.error);
+}
+
+async function regenerateResponse(messageDiv, messageId) {
+    showModal('Regenerate Response', 'Are you sure you want to regenerate this response?', 'confirm', async () => {
+        const conversationId = state.currentConversationId;
+        const systemPrompt = elements.systemPrompt.value;
+
+        // Find the user message before this assistant message
+        let userMessage = '';
+        let prevSibling = messageDiv.previousElementSibling;
+        while (prevSibling) {
+            if (prevSibling.classList.contains('justify-end')) { // User message
+                userMessage = prevSibling.querySelector('.prose').textContent.trim();
+                break;
+            }
+            prevSibling = prevSibling.previousElementSibling;
+        }
+
+        if (!userMessage) {
+            console.error('Could not find user message for regeneration');
+            return;
+        }
+
+        state.abortController = new AbortController();
+
+        // Show loading state
+        const contentDiv = messageDiv.querySelector('.message-content');
+        contentDiv.innerHTML = '<div class="flex items-center gap-2 text-gray-400"><i class="fa-solid fa-circle-notch fa-spin"></i> Regenerating...</div>';
+
+        try {
+            const formData = new FormData();
+            formData.append('message', userMessage);
+            formData.append('system_prompt', systemPrompt);
+            formData.append('conversation_id', conversationId);
+            formData.append('message_id', messageId);
+            formData.append('client_id', state.clientId);
+
+            const response = await authFetch('/regenerate_response', {
+                method: 'POST',
+                body: formData,
+                signal: state.abortController.signal
+            });
+
+            if (!response.ok) throw new Error('Regeneration failed');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let responseText = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                responseText += chunk;
+                updateAssistantMessage(responseText, messageDiv);
+            }
+
+        } catch (error) {
+            console.error('Error regenerating:', error);
+            contentDiv.textContent = 'Failed to regenerate response.';
+            showModal('Error', 'Failed to regenerate response', 'error');
+        } finally {
+            state.abortController = null;
+        }
+    });
+}
+
