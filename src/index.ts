@@ -26,6 +26,12 @@ async function main() {
     res.sendFile(path.join(__dirname, "..", "public", "index.html"));
   });
 
+  // Favicon (before auth middleware)
+  app.get("/favicon.ico", (_req, res) => {
+    res.setHeader("Content-Type", "image/svg+xml");
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">&#x1F60A;</text></svg>`);
+  });
+
   // Create HTTP server
   const server = createServer(app);
 
