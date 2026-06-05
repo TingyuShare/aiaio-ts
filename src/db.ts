@@ -236,35 +236,13 @@ export class ChatDatabase {
     this.db.run(
       `INSERT INTO providers (name, is_default, temperature, top_p, reasoning_effort, use_for_summarization, host, api_key, api_key_header)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["Custom", 1, 1.0, 0.95, "none", 1, "http://localhost:8000/v1", "", "Authorization"]
+      ["OpenAI", 1, 1.0, 0.95, "low", 1, "https://api.openai.com/v1", "", "Authorization"]
     );
-    let r = this.db.exec("SELECT last_insert_rowid()");
-    const customId = r[0].values[0][0];
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [customId, "meta-llama/Llama-3.2-1B-Instruct", 1, 0]);
-
-    this.db.run(
-      `INSERT INTO providers (name, is_default, temperature, top_p, reasoning_effort, use_for_summarization, host, api_key, api_key_header)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["Google", 0, 1.0, 0.95, "low", 0, "https://generativelanguage.googleapis.com/v1beta", "", "Authorization"]
-    );
-    r = this.db.exec("SELECT last_insert_rowid()");
-    const googleId = r[0].values[0][0];
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [googleId, "gemini-3-pro-preview", 1, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [googleId, "gemini-2.5-pro", 0, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [googleId, "gemini-2.5-flash", 0, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [googleId, "gemini-2.5-flash-lite", 0, 1]);
-
-    this.db.run(
-      `INSERT INTO providers (name, is_default, temperature, top_p, reasoning_effort, use_for_summarization, host, api_key, api_key_header)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["OpenAI", 0, 1.0, 0.95, "low", 0, "https://api.openai.com/v1", "", "Authorization"]
-    );
-    r = this.db.exec("SELECT last_insert_rowid()");
+    const r = this.db.exec("SELECT last_insert_rowid()");
     const openaiId = r[0].values[0][0];
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5.1-2025-11-13", 1, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5-mini-2025-08-07", 0, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5-nano-2025-08-07", 0, 1]);
-    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-oss-120b", 0, 0]);
+    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5.4", 1, 1]);
+    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5.4-mini", 0, 1]);
+    this.db.run("INSERT INTO models (provider_id, model_name, is_default, is_multimodal) VALUES (?, ?, ?, ?)", [openaiId, "gpt-5.4-nano", 0, 1]);
 
     this.db.run("INSERT INTO system_prompts (prompt_name, prompt_text, is_active) VALUES (?, ?, ?)", ["summary", SYSTEM_PROMPTS.summary.trim(), 0]);
     this.db.run("INSERT INTO system_prompts (prompt_name, prompt_text, is_active) VALUES (?, ?, ?)", ["default", SYSTEM_PROMPTS.default.trim(), 1]);

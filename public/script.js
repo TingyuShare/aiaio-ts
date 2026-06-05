@@ -726,7 +726,7 @@ async function saveProject() {
     try {
         let response;
         if (id) {
-            response = await fetch(`/projects/${id}`, {
+            response = await authFetch(`/projects/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(projectData)
@@ -769,7 +769,7 @@ async function deleteProject() {
 
     showModal('Delete Project', 'Are you sure? This will delete all conversations in this project.', 'confirm', async () => {
         try {
-            const response = await fetch(`/projects/${id}`, { method: 'DELETE' });
+            const response = await authFetch(`/projects/${id}`, { method: 'DELETE' });
             if (response.ok) {
                 showToast('Project deleted successfully');
                 closeProjectModal();
@@ -793,7 +793,7 @@ async function loadConversations() {
     try {
         state.isLoading = true;
         const url = state.currentProjectId ? `/conversations?project_id=${state.currentProjectId}` : '/conversations';
-        const response = await fetch(url);
+        const response = await authFetch(url);
         const data = await response.json();
         const conversationsList = document.getElementById('conversations-list');
 
@@ -849,7 +849,7 @@ async function deleteConversation(conversationId, event) {
 
     showModal('Delete Conversation', 'Are you sure you want to delete this conversation? This action cannot be undone.', 'confirm', async () => {
         try {
-            await fetch(`/conversations/${conversationId}`, { method: 'DELETE' });
+            await authFetch(`/conversations/${conversationId}`, { method: 'DELETE' });
             // WebSocket will handle the UI update
         } catch (error) {
             console.error('Error deleting conversation:', error);
@@ -875,7 +875,7 @@ async function editConversationTitle(conversationId, event) {
     if (!newTitle || newTitle === currentTitle) return;
 
     try {
-        const response = await fetch(`/conversations/${conversationId}/title`, {
+        const response = await authFetch(`/conversations/${conversationId}/title`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title: newTitle })
@@ -896,7 +896,7 @@ async function editConversationTitle(conversationId, event) {
 async function loadConversation(conversationId) {
     try {
         state.currentConversationId = conversationId;
-        const response = await fetch(`/conversations/${conversationId}`);
+        const response = await authFetch(`/conversations/${conversationId}`);
         const data = await response.json();
 
         elements.messagesContainer.innerHTML = '';
@@ -1208,7 +1208,7 @@ document.getElementById('message-edit-form').addEventListener('submit', async (e
     if (!content || !state.editingMessageId) return;
 
     try {
-        const response = await fetch(`/messages/${state.editingMessageId}`, {
+        const response = await authFetch(`/messages/${state.editingMessageId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content })
@@ -1384,7 +1384,7 @@ function removeFile(index) {
 // Settings and Prompts
 async function updateSystemPrompt() {
     try {
-        const response = await fetch(`/get_system_prompt?conversation_id=${state.currentConversationId || ''}`);
+        const response = await authFetch(`/get_system_prompt?conversation_id=${state.currentConversationId || ''}`);
         const data = await response.json();
         elements.systemPrompt.value = data.system_prompt;
     } catch (error) {
@@ -1409,7 +1409,7 @@ async function loadPrompts() {
         // Load the active prompt's content
         if (data.prompts.length > 0) {
             const activePrompt = data.prompts.find(p => p.is_active) || data.prompts[0];
-            const promptResponse = await fetch(`/prompts/${activePrompt.id}`);
+            const promptResponse = await authFetch(`/prompts/${activePrompt.id}`);
             const promptData = await promptResponse.json();
             elements.systemPrompt.value = promptData.content;
         }
@@ -1424,10 +1424,10 @@ async function handlePromptChange(e) {
 
     try {
         // Activate prompt
-        await fetch(`/prompts/${promptId}/activate`, { method: 'POST' });
+        await authFetch(`/prompts/${promptId}/activate`, { method: 'POST' });
 
         // Get prompt content
-        const response = await fetch(`/prompts/${promptId}`);
+        const response = await authFetch(`/prompts/${promptId}`);
         const data = await response.json();
         elements.systemPrompt.value = data.content;
 
@@ -1454,7 +1454,7 @@ async function savePromptChanges() {
     const promptName = promptSelector.options[promptSelector.selectedIndex].text;
 
     try {
-        const response = await fetch(`/prompts/${selectedPromptId}`, {
+        const response = await authFetch(`/prompts/${selectedPromptId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1469,7 +1469,7 @@ async function savePromptChanges() {
         }
 
         // Also set as active
-        await fetch(`/prompts/${selectedPromptId}/activate`, { method: 'POST' });
+        await authFetch(`/prompts/${selectedPromptId}/activate`, { method: 'POST' });
 
         showToast('Prompt saved and activated!');
     } catch (error) {
@@ -1522,7 +1522,7 @@ async function deleteCurrentPrompt() {
 
     showModal('Delete Prompt', `Are you sure you want to delete "${promptName}"? This action cannot be undone.`, 'confirm', async () => {
         try {
-            const response = await fetch(`/prompts/${selectedPromptId}`, {
+            const response = await authFetch(`/prompts/${selectedPromptId}`, {
                 method: 'DELETE'
             });
 
@@ -1607,7 +1607,7 @@ async function updateTopBarInfo() {
 
 async function updateTopBarModels(providerId) {
     try {
-        const modelsResponse = await fetch(`/providers/${providerId}/models`);
+        const modelsResponse = await authFetch(`/providers/${providerId}/models`);
         const modelsData = await modelsResponse.json();
         const modelSelect = document.getElementById('topbar-model-select');
 
@@ -1636,10 +1636,10 @@ async function handleTopBarProviderChange(event) {
     const providerId = event.target.value;
     try {
         // Set as default
-        await fetch(`/providers/${providerId}/set_default`, { method: 'POST' });
+        await authFetch(`/providers/${providerId}/set_default`, { method: 'POST' });
 
         // Update host display
-        const providerResponse = await fetch(`/providers/${providerId}`);
+        const providerResponse = await authFetch(`/providers/${providerId}`);
         const provider = await providerResponse.json();
         if (elements.infoHost) elements.infoHost.textContent = new URL(provider.host).hostname;
 
@@ -1656,7 +1656,7 @@ async function handleTopBarModelChange(event) {
     const modelId = event.target.value;
     if (!modelId) return;
     try {
-        await fetch(`/models/${modelId}/set_default`, { method: 'POST' });
+        await authFetch(`/models/${modelId}/set_default`, { method: 'POST' });
         showToast('Default model updated');
     } catch (error) {
         console.error('Error switching model:', error);
@@ -1677,7 +1677,7 @@ function populateProviderForm(provider) {
 
 async function loadModels(providerId) {
     try {
-        const response = await fetch(`/providers/${providerId}/models`);
+        const response = await authFetch(`/providers/${providerId}/models`);
         const data = await response.json();
 
         // Display models list in the UI
@@ -1718,7 +1718,7 @@ async function deleteCurrentProvider() {
 
     showModal('Delete Provider', `Are you sure you want to delete "${providerName}"? This will also delete all its models.`, 'confirm', async () => {
         try {
-            const response = await fetch(`/providers/${providerId}`, { method: 'DELETE' });
+            const response = await authFetch(`/providers/${providerId}`, { method: 'DELETE' });
             if (response.ok) {
                 showToast('Provider deleted successfully');
                 state.isInitializingSettings = true;
@@ -1792,7 +1792,7 @@ async function createNewSettingsConfig() {
 async function handleSettingsChange(e) {
     const providerId = e.target.value;
     try {
-        const response = await fetch(`/providers/${providerId}`);
+        const response = await authFetch(`/providers/${providerId}`);
         const provider = await response.json();
         populateProviderForm(provider);
 
@@ -1823,7 +1823,7 @@ async function saveSettings() {
     const providerId = elements.settingsSelector.value;
 
     try {
-        await fetch(`/providers/${providerId}`, {
+        await authFetch(`/providers/${providerId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(provider)
@@ -1834,7 +1834,7 @@ async function saveSettings() {
         await setDefaultSettings(true);
 
         // Reload provider data to reflect changes
-        const response = await fetch(`/providers/${providerId}`);
+        const response = await authFetch(`/providers/${providerId}`);
         const updatedProvider = await response.json();
         populateProviderForm(updatedProvider);
     } catch (error) {
@@ -1846,7 +1846,7 @@ async function saveSettings() {
 async function setDefaultSettings(silent = false) {
     const providerId = elements.settingsSelector.value;
     try {
-        await fetch(`/providers/${providerId}/set_default`, { method: 'POST' });
+        await authFetch(`/providers/${providerId}/set_default`, { method: 'POST' });
         if (!silent) {
             showToast('Default provider updated!');
         }
@@ -1880,7 +1880,7 @@ async function addModel() {
     const [modelName, isMultimodal] = values;
 
     try {
-        await fetch(`/providers/${providerId}/models`, {
+        await authFetch(`/providers/${providerId}/models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1899,7 +1899,7 @@ async function addModel() {
 async function deleteModel(modelId) {
     showModal('Delete Model', 'Are you sure you want to delete this model? This action cannot be undone.', 'confirm', async () => {
         try {
-            await fetch(`/models/${modelId}`, { method: 'DELETE' });
+            await authFetch(`/models/${modelId}`, { method: 'DELETE' });
             showToast('Model deleted successfully!');
             const providerId = elements.settingsSelector.value;
             await loadModels(providerId);
@@ -1912,7 +1912,7 @@ async function deleteModel(modelId) {
 
 async function setDefaultModel(modelId) {
     try {
-        await fetch(`/models/${modelId}/set_default`, { method: 'POST' });
+        await authFetch(`/models/${modelId}/set_default`, { method: 'POST' });
         showToast('Default model updated!');
         const providerId = elements.settingsSelector.value;
         await loadModels(providerId);
